@@ -1,0 +1,315 @@
+import IPython
+
+# Versión expandida con redimensionamiento dinámico y botón de Pantalla Completa nativa
+display(IPython.display.HTML('''
+    <div id="gameContainer" style="width: 100vw; height: 90vh; background-color: #0b0c10; padding: 10px; border-radius: 12px; border: 3px solid #00ffff; box-shadow: 0 0 20px rgba(0, 255, 255, 0.3); display: flex; flex-direction: column; justify-content: space-between; align-items: center; box-sizing: border-box;">
+        <div style="width: 100%; font-family: 'Courier New', Courier, monospace; font-size: 19px; font-weight: bold; text-align: center; background: rgba(0,0,0,0.4); padding: 5px 0; border-radius: 5px;">
+            <span id="score" style="color: #f1c40f; margin-right: 20px; text-shadow: 0 0 5px #f1c40f;">SCORE: 0</span>
+            <span id="level" style="color: #2ecc71; margin-right: 20px; text-shadow: 0 0 5px #2ecc71;">LEVEL: BEGINNER</span>
+            <span id="health" style="color: #ff3f34; margin-right: 20px; text-shadow: 0 0 5px #ff3f34;">HULL: 100%</span>
+            <span id="weapon" style="color: #e056fd; text-shadow: 0 0 5px #e056fd;">WEAPON: SIMPLE</span>
+        </div>
+        
+        <canvas id="migGame" style="background: #111424; border-radius: 5px; box-shadow: inset 0 0 20px rgba(0,0,0,0.8); width: 100%; flex-grow: 1; min-height: 0;"></canvas>
+        
+        <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; padding-top: 5px; box-sizing: border-box;">
+            <p style="color: #95a5a6; font-family: sans-serif; font-size: 12px; margin: 0; text-align: left; line-height: 1.3;">
+                Mover: <b>Flechas</b> o <b>8, 2, 4, 6</b> | Armas: <b>ESPACIO</b>, <b>G</b>, <b>M</b> | Reiniciar: <b>R</b><br>
+                <span style="color: #ff3f34;">Cueva (30 pts): ¡Chocar con los límites rocosos destruye el jet al instante!</span>
+            </p>
+            <button onclick="goFullScreen()" style="background: #2ecc71; color: black; border: none; padding: 8px 15px; font-weight: bold; font-family: sans-serif; border-radius: 4px; cursor: pointer; box-shadow: 0 0 10px rgba(46, 204, 113, 0.4);">
+                ?? PANTALLA COMPLETA
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("migGame");
+        const ctx = canvas.getContext("2d");
+        const container = document.getElementById("gameContainer");
+        
+        // Ajustar resolución interna del Canvas basándose en el contenedor real
+        function resizeCanvas() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+        }
+        
+        // Ejecutar ajuste inicial
+        setTimeout(resizeCanvas, 100);
+
+        let px = 80, py = 180, score = 0, health = 100, isGameOver = false;
+        let bullets = [], enemies = [], groundBullets = [], particles = [];
+        let currentWeapon = "SIMPLE";
+        let mountainOffset1 = 0, mountainOffset2 = 0;
+
+        function goFullScreen() {
+            if (container.requestFullscreen) {
+                container.requestFullscreen();
+            } else if (container.mozRequestFullScreen) {
+                container.mozRequestFullScreen();
+            } else if (container.webkitRequestFullscreen) {
+                container.webkitRequestFullscreen();
+            } else if (container.msRequestFullscreen) {
+                container.msRequestFullscreen();
+            }
+            // Pequeña espera para recalcular dimensiones tras el cambio de pantalla
+            setTimeout(resizeCanvas, 200);
+        }
+
+        // Escuchar cambios de tamaño de pantalla (por si se sale del modo full screen)
+        window.addEventListener('resize', resizeCanvas);
+
+        function createExplosion(x, y, color) {
+            for (let i = 0; i < 15; i++) {
+                particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * 7,
+                    vy: (Math.random() - 0.5) * 7,
+                    radius: Math.random() * 4 + 1,
+                    alpha: 1,
+                    color: color
+                });
+            }
+        }
+
+        function drawMountains(offset, count, heightFactor, color) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height);
+            for (let i = 0; i <= count; i++) {
+                let x = (i * (canvas.width / (count - 1))) - (offset % (canvas.width / (count - 1)));
+                let y = canvas.height - 50 - (Math.sin(i * 1.7) * heightFactor + heightFactor);
+                ctx.lineTo(x, y);
+            }
+            ctx.lineTo(canvas.width, canvas.height);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function drawCaveCeiling(offset, count, heightFactor, color) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            for (let i = 0; i <= count; i++) {
+                let x = (i * (canvas.width / (count - 1))) - (offset % (canvas.width / (count - 1)));
+                let y = 40 + (Math.cos(i * 1.5) * heightFactor + heightFactor);
+                ctx.lineTo(x, y);
+            }
+            ctx.lineTo(canvas.width, 0);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function resetGame() {
+            px = 80; py = canvas.height / 2; score = 0; health = 100; isGameOver = false;
+            bullets = []; enemies = []; groundBullets = []; particles = [];
+            currentWeapon = "SIMPLE";
+            document.getElementById("score").innerHTML = "SCORE: " + score;
+            document.getElementById("health").innerHTML = "HULL: " + health + "%";
+            document.getElementById("health").style.color = "#ff3f34";
+            // Forzar recalibrado por si las dimensiones cambiaron
+            resizeCanvas();
+        }
+
+        function gameLoop() {
+            // Asegurar que las coordenadas lógicas no queden fuera si py no se ha inicializado en reset
+            if (py === 180 && canvas.height > 400 && score === 0 && health === 100) {
+                py = canvas.height / 2;
+            }
+
+            if (isGameOver) {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                ctx.font = "bold 38px 'Courier New'";
+                ctx.fillStyle = "#ff3f34";
+                ctx.textAlign = "center";
+                ctx.shadowBlur = 15; ctx.shadowColor = "#ff3f34";
+                ctx.fillText("MIG-16 DESTRUIDO", canvas.width / 2, canvas.height / 2 - 20);
+                
+                ctx.font = "20px 'Courier New'";
+                ctx.fillStyle = "#ffffff";
+                ctx.shadowBlur = 0;
+                ctx.fillText("PUNTUACIÓN FINAL: " + score, canvas.width / 2, canvas.height / 2 + 20);
+                ctx.fillText("PRESIONA 'R' PARA REINICIAR", canvas.width / 2, canvas.height / 2 + 60);
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            let skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            if (score >= 30) {
+                skyGrad.addColorStop(0, "#090514");
+                skyGrad.addColorStop(1, "#170f26");
+            } else {
+                skyGrad.addColorStop(0, "#0f172a");
+                skyGrad.addColorStop(0.6, "#1e1b4b");
+                skyGrad.addColorStop(1, "#311042");
+            }
+            ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            let flightSpeed = 1.5;
+            let levelStr = "BEGINNER"; let enemySpeed = 2.0; let spawnRate = 0.03; let groundFireRate = 0.012;
+
+            if (score >= 5 && score < 15) { 
+                levelStr = "MEDIUM"; enemySpeed = 3.5; spawnRate = 0.05; groundFireRate = 0.025; flightSpeed = 2.5;
+            } else if (score >= 15 && score < 30) { 
+                levelStr = "PROFESSIONAL"; enemySpeed = 5.2; spawnRate = 0.07; groundFireRate = 0.04; flightSpeed = 3.8;
+            } else if (score >= 30) { 
+                levelStr = "KAMIKAZE (CAVE)"; enemySpeed = 7.0; spawnRate = 0.12; groundFireRate = 0.06; flightSpeed = 5.5;
+            }
+            document.getElementById("level").innerHTML = "LEVEL: " + levelStr;
+
+            mountainOffset1 += flightSpeed * 0.5; 
+            mountainOffset2 += flightSpeed * 1.5; 
+
+            if (score >= 30) {
+                drawCaveCeiling(mountainOffset2, 9, 45, "#261c38");
+                drawMountains(mountainOffset2, 8, 65, "#181026");
+                
+                // Límites de vuelo dinámicos proporcionales al alto de la pantalla actual
+                if (py < 90 || py > canvas.height - 100) {
+                    createExplosion(px, py, "#00ffff");
+                    health = 0;
+                    isGameOver = true;
+                }
+            } else {
+                drawMountains(mountainOffset1, 6, 50, "#1c1236");
+                drawMountains(mountainOffset2, 8, 35, "#130924");
+            }
+
+            if (Math.random() < groundFireRate) {
+                let spawnX = canvas.width - Math.random() * (canvas.width * 0.5);
+                let startY = score >= 30 ? canvas.height - 95 : canvas.height - 55;
+                groundBullets.push({ x: spawnX, y: startY, speed: 6.0, size: 4.5 });
+            }
+
+            groundBullets.forEach((gb, index) => {
+                gb.y -= gb.speed;
+                ctx.shadowBlur = 8; ctx.shadowColor = "#00ff00";
+                ctx.fillStyle = "#00ff00";
+                ctx.beginPath(); ctx.arc(gb.x, gb.y, gb.size, 0, 6.28); ctx.fill();
+                
+                let playerDist = Math.hypot(px - gb.x, py - gb.y);
+                if (playerDist < 20) {
+                    createExplosion(gb.x, gb.y, "#00ff00");
+                    groundBullets.splice(index, 1);
+                    health -= 20; 
+                    if (health <= 0) { health = 0; isGameOver = true; createExplosion(px, py, "#00ffff"); }
+                    document.getElementById("health").innerHTML = "HULL: " + health + "%";
+                }
+                if (gb.y < 0) groundBullets.splice(index, 1);
+            });
+            ctx.shadowBlur = 0;
+
+            // Dibujar Jet MIG-16
+            ctx.shadowBlur = 10; ctx.shadowColor = "#00ffff";
+            ctx.fillStyle = "#7f8c8d";
+            ctx.beginPath();
+            ctx.moveTo(px - 22, py - 14); ctx.lineTo(px + 12, py); ctx.lineTo(px - 22, py + 14); ctx.lineTo(px - 14, py);
+            ctx.fill();
+
+            ctx.fillStyle = "#00ffff";
+            ctx.beginPath();
+            ctx.moveTo(px - 6, py - 5); ctx.lineTo(px + 9, py); ctx.lineTo(px - 6, py + 5); ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // Proyectiles aliados
+            bullets.forEach((b, index) => {
+                b.x += b.speed;
+                ctx.shadowBlur = 8; ctx.shadowColor = b.color; ctx.fillStyle = b.color;
+                ctx.fillRect(b.x, b.y - b.h/2, b.w, b.h);
+                if (b.x > canvas.width) bullets.splice(index, 1);
+            });
+            ctx.shadowBlur = 0;
+
+            // Enemigos (Drones)
+            if (Math.random() < spawnRate) {
+                let minY = score >= 30 ? 110 : 50;
+                let maxY = score >= 30 ? canvas.height - 120 : canvas.height - 60;
+                let targetY = Math.random() * (maxY - minY) + minY;
+                enemies.push({ x: canvas.width + 20, y: targetY, radius: 13 });
+            }
+
+            enemies.forEach((en, eIdx) => {
+                en.x -= enemySpeed;
+                let gradient = ctx.createRadialGradient(en.x - 3, en.y - 3, 2, en.x, en.y, en.radius);
+                gradient.addColorStop(0, '#ff6b6b'); gradient.addColorStop(0.4, '#ff0000'); gradient.addColorStop(1, '#660000');
+                ctx.fillStyle = gradient;
+                ctx.beginPath(); ctx.arc(en.x, en.y, en.radius, 0, 6.28); ctx.fill();
+
+                bullets.forEach((bu, bIdx) => {
+                    let dist = Math.hypot(en.x - bu.x, en.y - bu.y);
+                    if (dist < en.radius + bu.h) {
+                        createExplosion(en.x, en.y, bu.color);
+                        enemies.splice(eIdx, 1);
+                        bullets.splice(bIdx, 1);
+                        score++;
+                        document.getElementById("score").innerHTML = "SCORE: " + score;
+                    }
+                });
+
+                let crashDist = Math.hypot(px - en.x, py - en.y);
+                if (crashDist < en.radius + 14) {
+                    createExplosion(en.x, en.y, "red");
+                    enemies.splice(eIdx, 1);
+                    health -= 40;
+                    if (health <= 0) { health = 0; isGameOver = true; createExplosion(px, py, "#00ffff"); }
+                    document.getElementById("health").innerHTML = "HULL: " + health + "%";
+                }
+                if (en.x < -20) enemies.splice(eIdx, 1);
+            });
+
+            // Explosiones
+            particles.forEach((p, index) => {
+                p.x += p.vx; p.y += p.vy; p.alpha -= 0.025;
+                if (p.alpha <= 0) {
+                    particles.splice(index, 1);
+                } else {
+                    ctx.save(); ctx.globalAlpha = p.alpha; ctx.fillStyle = p.color;
+                    ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, 6.28); ctx.fill();
+                    ctx.restore();
+                }
+            });
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Teclado
+        window.addEventListener("keydown", (e) => {
+            const key = e.key;
+            if([" ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "2", "4", "6", "8", "r", "R"].includes(key)) {
+                e.preventDefault();
+            }
+
+            if ((key.toLowerCase() === "r") && isGameOver) {
+                resetGame();
+                return;
+            }
+
+            if (isGameOver) return;
+
+            let step = 24; // Aumentado ligeramente para equilibrar pantallas grandes
+            if ((key === "ArrowUp" || key === "8") && py > 40) py -= step;
+            if ((key === "ArrowDown" || key === "2") && py < canvas.height - 50) py += step;
+            if ((key === "ArrowLeft" || key === "4") && px > 40) px -= step;
+            if ((key === "ArrowRight" || key === "6") && px < canvas.width - 200) px += step;
+            
+            if (key === " ") {
+                currentWeapon = "SIMPLE";
+                bullets.push({ x: px + 12, y: py, speed: 11, color: "#f1c40f", w: 14, h: 4 });
+            }
+            if (key.toLowerCase() === "g") {
+                currentWeapon = "SMG (RÁPIDO)";
+                bullets.push({ x: px, y: py - 6, speed: 15, color: "#e67e22", w: 10, h: 2.5 });
+                bullets.push({ x: px, y: py + 6, speed: 15, color: "#e67e22", w: 10, h: 2.5 });
+            }
+            if (key.toLowerCase() === "m") {
+                currentWeapon = "MISIL PESADO";
+                bullets.push({ x: px + 12, y: py, speed: 8, color: "#ffffff", w: 26, h: 9 });
+            }
+            document.getElementById("weapon").innerHTML = "WEAPON: " + currentWeapon;
+        });
+
+        gameLoop();
+    </script>
+'''))
